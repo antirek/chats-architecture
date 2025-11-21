@@ -1,1 +1,1 @@
-# chats-analys
+# chats-architecture
