@@ -404,10 +404,266 @@ erDiagram
 
 7. **Аудит:** Изменения записываются через `Audit` модель
 
+## Интеграция с Telegram
+
+### Обзор
+
+Telegram интеграция работает через систему плагинов Chaskiq. Плагин Telegram загружается из AppStore (appstore.chaskiq.io) или может быть разработан локально. Интеграция использует Telegram Bot API для получения и отправки сообщений.
+
+### Архитектура интеграции
+
+```mermaid
+sequenceDiagram
+    participant TG as Telegram Bot API
+    participant Webhook as Chaskiq Webhook<br/>/api/v1/hooks/receiver/:id
+    participant Controller as ProviderController
+    participant Job as HookMessageReceiverJob
+    participant API as MessageApis::Telegram::Api
+    participant Conversation as Conversation Model
+    participant Part as ConversationPart
+    participant Cable as ActionCable
+    participant Agent as Agent
+    participant User as AppUser
+
+    TG->>Webhook: POST webhook (новое сообщение)
+    Webhook->>Controller: process_event
+    Controller->>Job: enqueue_process_event
+    Job->>API: process_event(params, package)
+    API->>API: Парсинг Telegram update
+    API->>API: Извлечение данных пользователя
+    API->>API: Обработка медиа (фото, видео, аудио, стикеры)
+    API->>Conversation: find_or_create_by_channel
+    API->>User: add_participant (создание/поиск AppUser)
+    API->>Conversation: add_message
+    Conversation->>Part: create ConversationPart
+    Part->>Part: assign_and_notify
+    Part->>Cable: broadcast to EventsChannel
+    Cable->>Agent: WebSocket: conversation_part
+```
+
+### Входящие сообщения (Telegram → Chaskiq)
+
+**Процесс обработки:**
+
+1. **Webhook регистрация:**
+   - При установке интеграции вызывается `register_webhook`
+   - Telegram Bot API настраивается на отправку webhook'ов на URL: `/api/v1/hooks/receiver/{encoded_id}`
+   - `encoded_id` содержит закодированный `app_key` и `integration_id`
+
+2. **Получение сообщения:**
+   - Telegram отправляет POST запрос с `update` объектом
+   - Контроллер `ProviderController#process_event` получает запрос
+   - Создается `HookMessageReceiverJob` для асинхронной обработки
+
+3. **Обработка события (`MessageApis::Telegram::Api#process_event`):**
+   ```ruby
+   # Парсинг Telegram update
+   message = params["message"]
+   sender_id = message["from"]["id"]
+   chat_id = message["chat"]["id"]
+   text = message["text"]
+   
+   # Поиск или создание пользователя
+   user_data = {
+     id: sender_id,
+     first_name: message["from"]["first_name"],
+     last_name: message["from"]["last_name"]
+   }
+   participant = add_participant(user_data, "telegram")
+   
+   # Поиск или создание разговора
+   conversation = find_conversation_by_channel("telegram", chat_id) ||
+                 create_conversation_for_channel(participant, chat_id)
+   
+   # Обработка медиа
+   if message["photo"]
+     # Загрузка фото через Telegram API
+     file_url = get_telegram_file(message["photo"].last["file_id"])
+     # Создание блока изображения
+   elsif message["video"] || message["animation"]
+     # Обработка видео/GIF
+   elsif message["voice"] || message["audio"]
+     # Обработка аудио
+   elsif message["sticker"]
+     # Обработка стикера
+   end
+   
+   # Создание сообщения
+   conversation.add_message(
+     from: participant,
+     message: {
+       html_content: text,
+       serialized_content: serialize_content(text, media)
+     },
+     provider: "telegram",
+     message_source_id: message["message_id"]
+   )
+   ```
+
+4. **Создание ConversationChannel:**
+   - При создании разговора создается `ConversationChannel`
+   - `provider: "telegram"`, `provider_channel_id: chat_id`
+   - Это связывает разговор с Telegram чатом
+
+5. **Уведомления:**
+   - После создания `ConversationPart` отправляются WebSocket уведомления
+   - Агенты получают событие через `EventsChannel`
+   - Пользователи получают обновление через `MessengerEventsChannel`
+
+### Исходящие сообщения (Chaskiq → Telegram)
+
+**Процесс отправки:**
+
+1. **Триггер отправки:**
+   - Когда агент отправляет сообщение в разговоре
+   - `ConversationPart` создается через `Conversation#add_message`
+   - После сохранения вызывается `notify_to_channels`
+
+2. **Уведомление каналов:**
+   ```ruby
+   # ApiChannelNotificatorJob
+   conversation.conversation_channels.each do |channel|
+     channel.notify_part(conversation: conversation, part: part)
+   end
+   ```
+
+3. **Отправка через Telegram API (`MessageApis::Telegram::Api#send_message`):**
+   ```ruby
+   def send_message(conversation, part)
+     return if part.private_note?
+     
+     channel = conversation.conversation_channels
+                          .find_by(provider: "telegram")
+     return unless channel
+     
+     chat_id = channel.provider_channel_id
+     message = part.message
+     
+     # Отправка текста
+     if message.text_content.present?
+       response = @conn.post(
+         "https://api.telegram.org/bot#{@api_key}/sendMessage",
+         {
+           chat_id: chat_id,
+           text: message.text_content,
+           parse_mode: "HTML"
+         }
+       )
+     end
+     
+     # Отправка медиа из блоков
+     blocks = MessageApis::BlockManager.get_blocks(message.serialized_content)
+     blocks.each do |block|
+       if block["type"] == "ImageBlock"
+         send_photo(chat_id, block["attrs"]["url"])
+       elsif block["type"] == "FileBlock"
+         send_document(chat_id, block["attrs"]["url"])
+       end
+     end
+     
+     # Сохранение связи
+     message_id = JSON.parse(response.body)["result"]["message_id"]
+     part.conversation_part_channel_sources.create(
+       provider: "telegram",
+       message_source_id: message_id
+     )
+   end
+   ```
+
+### Поддерживаемые типы сообщений
+
+Telegram интеграция поддерживает:
+
+1. **Текстовые сообщения:**
+   - Обычный текст
+   - Текст с переносами строк
+   - HTML форматирование
+
+2. **Медиа:**
+   - **Фото:** Обрабатываются через `photo` массив, выбирается наибольшее разрешение
+   - **Видео:** Обрабатываются через `video` или `animation` объект
+   - **Аудио:** Обрабатываются через `voice` или `audio` объект
+   - **Стикеры:** Обрабатываются через `sticker` объект
+   - **Документы:** Обрабатываются через `document` объект
+
+3. **Обработка медиа:**
+   - Файлы загружаются через Telegram Bot API (`getFile`)
+   - Сохраняются в ActiveStorage
+   - Создаются соответствующие блоки в `serialized_content`
+
+### Конфигурация интеграции
+
+**Необходимые параметры:**
+- `access_token` - токен Telegram бота (получается от @BotFather)
+- `user_id` - ID владельца бота (опционально)
+
+**Регистрация webhook:**
+```ruby
+def register_webhook(app_package, integration)
+  webhook_url = integration.hook_url
+  @conn.post(
+    "https://api.telegram.org/bot#{@api_key}/setWebhook",
+    { url: webhook_url }
+  )
+end
+```
+
+### Особенности реализации
+
+1. **Связь сообщений:**
+   - `ConversationPartChannelSource` связывает сообщение Chaskiq с Telegram message_id
+   - Это позволяет отслеживать статус доставки и избегать дублирования
+
+2. **Обработка ошибок:**
+   - Ошибки Telegram API логируются
+   - Сообщения с ошибками не создаются в системе
+
+3. **Множественные чаты:**
+   - Каждый Telegram чат создает отдельный `ConversationChannel`
+   - Разговоры из одного чата группируются в один `Conversation`
+
+4. **Анонимные пользователи:**
+   - Пользователи Telegram создаются как анонимные (`Visitor` или `Lead`)
+   - Связываются через `ExternalProfile` с `provider: "telegram"`
+
+### Схема потока данных Telegram
+
+```mermaid
+graph TB
+    subgraph "Telegram"
+        Bot[Telegram Bot]
+        User[Telegram User]
+    end
+    
+    subgraph "Chaskiq"
+        Webhook[Webhook Endpoint]
+        Job[HookMessageReceiverJob]
+        API[Telegram API Class]
+        Conv[Conversation]
+        Part[ConversationPart]
+        Channel[ConversationChannel]
+        AppUser[AppUser]
+    end
+    
+    User -->|Отправляет сообщение| Bot
+    Bot -->|Webhook POST| Webhook
+    Webhook -->|enqueue| Job
+    Job -->|process_event| API
+    API -->|find_or_create| Conv
+    API -->|add_participant| AppUser
+    API -->|add_message| Part
+    Part -->|notify| Channel
+    
+    Channel -->|send_message| API
+    API -->|POST sendMessage| Bot
+    Bot -->|Доставляет| User
+```
+
 ## Потенциальные точки оптимизации
 
 1. **N+1 запросы:** При загрузке разговоров с сообщениями
 2. **WebSocket broadcast:** Можно оптимизировать фильтрацию событий
 3. **Background jobs:** Можно добавить приоритеты для критичных задач
 4. **Кэширование:** Можно кэшировать часто запрашиваемые данные (агенты, правила назначения)
+5. **Telegram API rate limits:** Нужно учитывать лимиты Telegram (30 сообщений/сек для группы)
 
