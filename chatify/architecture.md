@@ -110,8 +110,8 @@ graph TB
     end
     
     subgraph "Внешние сервисы"
-        PusherServer[Pusher Server<br/>(SaaS - pusher.com)]
-        Database[(База данных<br/>MySQL/PostgreSQL)]
+        PusherServer[Pusher Server SaaS]
+        Database[(База данных)]
     end
     
     UI --> JS
