@@ -763,16 +763,11 @@ sequenceDiagram
 
 ```mermaid
 graph TD
-    A[Event A<br/>depth: 1] --> B[Event B<br/>User1: Привет<br/>depth: 2]
-    A --> C[Event C<br/>User2: Пока<br/>depth: 2]
+    A["Event A<br/>depth: 1"] --> B["Event B<br/>User1: Привет<br/>depth: 2<br/>prev_events: [A]"]
+    A --> C["Event C<br/>User2: Пока<br/>depth: 2<br/>prev_events: [A]"]
     
-    B -.->|prev_events: [A]| B
-    C -.->|prev_events: [A]| C
-    
-    B --> D[Event D<br/>User3: Как дела?<br/>depth: 3]
+    B --> D["Event D<br/>User3: Как дела?<br/>depth: 3<br/>prev_events: [B, C]"]
     C --> D
-    
-    D -.->|prev_events: [B, C]| D
     
     style B fill:#ffe1f5
     style C fill:#ffe1f5
