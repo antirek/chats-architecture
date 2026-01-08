@@ -893,7 +893,7 @@ graph TB
     
     subgraph "Notification"
         NOT[Notifier]
-        SYNC[/sync endpoint]
+        SYNC["/sync endpoint"]
     end
     
     C2 -->|Отметить прочитанным| API1
