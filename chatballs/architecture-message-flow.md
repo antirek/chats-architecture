@@ -242,14 +242,14 @@ sequenceDiagram
   participant EW as worker-events
   participant AI as run_requested_turn
   participant DB as PostgreSQL
-  participant TR as transports ai_delivery
+  participant TR as transports
 
   IN->>OB: conversation.ai_turn_requested
-  EW->>OB: claim SKIP LOCKED, порядок в диалоге
+  EW->>OB: claim with SKIP LOCKED
   EW->>AI: handle_ai_turn_requested
-  AI->>DB: Message AI via store_answer
+  AI->>DB: store_answer Message AI
   AI->>TR: deliver
-  Note over TR: WEB noop; messengers send_text/voice/file
+  Note over TR: WEB noop, messengers send adapters
 ```
 
 Пока ход в `PENDING`/`RUNNING`, виджет в poll видит `thinking` (не классический typing оператора).
@@ -262,7 +262,7 @@ sequenceDiagram
 erDiagram
   Organization ||--o{ Contact : has
   Organization ||--o{ Channel : has
-  Channel ||--|| AIAgent : one-to-one agent
+  Channel ||--o| AIAgent : agent
   Channel ||--o{ Integration : connections
   Contact ||--o{ ConnectionIdentity : identities
   Integration ||--o{ ConnectionIdentity : via
