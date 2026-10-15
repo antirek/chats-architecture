@@ -35,8 +35,8 @@ Self-hosted ИИ-платформа клиентской поддержки: м�
 flowchart TB
   subgraph clients [Клиенты]
     Site[Сайт с виджетом]
-    Messengers[Telegram / MAX / VK / Email]
-    Ops[Сотрудник · internal-ui]
+    Messengers[Telegram MAX VK Email]
+    Ops[Сотрудник internal-ui]
   end
 
   subgraph edge [Публичная граница]
@@ -45,26 +45,26 @@ flowchart TB
   end
 
   subgraph app [Backend surfaces]
-    BA[backend-app<br/>tenant API + WS + webchat]
+    BA["backend-app: tenant API, WS, webchat"]
     BP[backend-platform]
     BAdm[backend-admin loopback]
   end
 
   subgraph workers [Фон]
-    Poller[worker · poller<br/>опрос мессенджеров]
-    Events[worker-events<br/>AI / notify / calls]
+    Poller["worker poller: опрос мессенджеров"]
+    Events["worker-events: AI, notify, calls"]
   end
 
   subgraph data [Данные]
     PG[(PostgreSQL + pgvector)]
-    Redis[(Redis<br/>cache + channel layer)]
+    Redis["Redis: cache + channel layer"]
   end
 
-  Site -->|HTTP /chat-widget.js| Caddy
+  Site -->|HTTP chat-widget.js| Caddy
   Ops -->|HTTPS| Caddy
   Messengers -.->|API провайдера| Poller
   Caddy --> FE
-  FE -->|/api /ws| BA
+  FE -->|api and ws| BA
   FE -->|статика| Ops
   FE -->|виджет| Site
   BA --> PG
@@ -107,14 +107,14 @@ flowchart LR
     presence[presence.py]
   end
 
-  integrations -->|подключение → канал| channels
-  channels -->|1:1| ai
+  integrations -->|connection to channel| channels
+  channels -->|1 to 1| ai
   webchat -->|WEB integration| integrations
-  conversations -->|ingest / send| integrations
+  conversations -->|ingest and send| integrations
   conversations --> events
   conversations --> realtime
   events -->|AI turn| conversations
-  calls -->|дочерняя сессия| conversations
+  calls -->|child session| conversations
 ```
 
 Приложения: `apps/backend`, `apps/internal-ui`, `apps/web-chat`. Пакеты: `packages/contracts`, `packages/shared`, `packages/ui`.
@@ -136,14 +136,14 @@ Webhook’ов мессенджеров нет: входящие с Telegram/MAX
 ```mermaid
 flowchart TB
   subgraph inbound [Входящие]
-    WC[web-chat POST /webchat/messages]
-    POLL[poller · poll_updates]
+    WC[web-chat POST webchat messages]
+    POLL[poller poll_updates]
   end
 
   ING[ingest_inbound]
   MSG[(Message CONTACT)]
-  SIG[signals → notify_conversation_changed]
-  WS[Redis Channels → ConversationEventsConsumer]
+  SIG[signals notify_conversation_changed]
+  WS[Redis Channels to ConversationEventsConsumer]
   UI[internal-ui refetch REST]
 
   WC --> ING
@@ -152,19 +152,19 @@ flowchart TB
   MSG --> SIG
   SIG --> WS --> UI
 
-  ING -->|control_mode=AI| OUT[outbox ai_turn_requested]
+  ING -->|control_mode AI| OUT[outbox ai_turn_requested]
   OUT --> EW[worker-events]
   EW --> AIM[(Message AI)]
   AIM --> SEND[transports.send_reply]
 
-  OP[internal-ui POST …/messages]
+  OP[internal-ui POST messages]
   OP --> POM[post_operator_message]
   POM --> OPM[(Message OPERATOR)]
   OPM --> SEND
   OPM --> SIG
 
-  SEND -->|WEB| NOOP[_web_noop · уже в БД]
-  SEND -->|TG/MAX/VK/Email| API[API провайдера]
+  SEND -->|WEB| NOOP[web_noop already in DB]
+  SEND -->|TG MAX VK Email| API[API провайдера]
   NOOP --> POLLUI[виджет polls history]
 ```
 
@@ -175,7 +175,7 @@ flowchart TB
 ```mermaid
 sequenceDiagram
   autonumber
-  participant V as Посетитель<br/>web-chat
+  participant V as Visitor web-chat
   participant API as WebchatMessagesView
   participant IN as ingest_inbound
   participant DB as PostgreSQL
@@ -183,16 +183,16 @@ sequenceDiagram
   participant WS as ConversationEventsConsumer
   participant UI as internal-ui
 
-  V->>API: POST /api/v1/webchat/messages/
+  V->>API: POST webchat messages
   API->>IN: InboundMessage
-  IN->>DB: Contact / Identity / Conversation / Message(CONTACT)
-  IN-->>DB: (опц.) request_ai_turn → outbox
+  IN->>DB: Contact Identity Conversation Message CONTACT
+  IN-->>DB: optional request_ai_turn then outbox
   Note over DB: post_save Message
   DB->>RT: conversation.changed + inbox.changed
   RT->>WS: Redis group_send
   WS->>UI: JSON invalidate
-  UI->>API: GET …/conversations/{id}/messages/
-  API-->>UI: лента с новым сообщением
+  UI->>API: GET conversations messages
+  API-->>UI: message list with new message
 ```
 
 Мессенджер отличается только входом: `poll_all_messengers` → тот же `ingest_inbound`.
@@ -209,24 +209,24 @@ sequenceDiagram
   participant POM as post_operator_message
   participant DB as PostgreSQL
   participant TR as transports.send_reply
-  participant EXT as Мессенджер / WEB
-  participant V as Посетитель<br/>web-chat
+  participant EXT as Messenger or WEB
+  participant V as Visitor web-chat
   participant RT as realtime
-  participant Peer as Другие операторы
+  participant Peer as Other operators
 
-  UI->>MV: POST …/conversations/{id}/messages/
-  MV->>POM: claim + PUBLIC_REPLY
-  POM->>DB: Message(OPERATOR)
+  UI->>MV: POST conversations messages
+  MV->>POM: claim and PUBLIC_REPLY
+  POM->>DB: Message OPERATOR
   POM->>TR: send_reply
   alt WEB
-    TR-->>EXT: noop (уже в БД)
-    V->>MV: poll GET /webchat/messages/?since=
-    MV-->>V: новое сообщение
-  else Telegram / MAX / VK / Email
-    TR->>EXT: send_text / voice / file
+    TR-->>EXT: noop already in DB
+    V->>MV: poll GET webchat messages
+    MV-->>V: new message
+  else Telegram MAX VK Email
+    TR->>EXT: send_text voice file
   end
   DB->>RT: conversation.changed
-  RT->>Peer: WS invalidate → REST
+  RT->>Peer: WS invalidate then REST
 ```
 
 ---
@@ -242,14 +242,14 @@ sequenceDiagram
   participant EW as worker-events
   participant AI as run_requested_turn
   participant DB as PostgreSQL
-  participant TR as transports / ai_delivery
+  participant TR as transports ai_delivery
 
   IN->>OB: conversation.ai_turn_requested
-  EW->>OB: claim (SKIP LOCKED, порядок в диалоге)
+  EW->>OB: claim SKIP LOCKED, порядок в диалоге
   EW->>AI: handle_ai_turn_requested
-  AI->>DB: Message(AI) via store_answer
+  AI->>DB: Message AI via store_answer
   AI->>TR: deliver
-  Note over TR: WEB — noop; мессенджеры — send_*
+  Note over TR: WEB noop; messengers send_text/voice/file
 ```
 
 Пока ход в `PENDING`/`RUNNING`, виджет в poll видит `thinking` (не классический typing оператора).
@@ -262,7 +262,7 @@ sequenceDiagram
 erDiagram
   Organization ||--o{ Contact : has
   Organization ||--o{ Channel : has
-  Channel ||--|| AIAgent : "1:1 агент"
+  Channel ||--|| AIAgent : one-to-one agent
   Channel ||--o{ Integration : connections
   Contact ||--o{ ConnectionIdentity : identities
   Integration ||--o{ ConnectionIdentity : via
